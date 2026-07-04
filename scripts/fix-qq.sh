@@ -164,12 +164,62 @@ else
     cp "$COMPOSE_FILE" "$COMPOSE_FILE.bak.$(date +%Y%m%d_%H%M%S)"
     echo "   ✅ 已备份: $COMPOSE_FILE.bak.$(date +%Y%m%d_%H%M%S)"
 
-    # 注入挂载行
-    sed -i "/^  $SERVICE:/,/^  [a-z]/{
-      /^    volumes:/a\\
-$MOUNT_LINE
-    }" "$COMPOSE_FILE"
-    echo "   ✅ 挂载已注入"
+    # 注入挂载行（用 Python 逐行解析，自适应任意缩进）
+    python3 -c "
+import sys
+svc = '$SERVICE'
+mount = '$MOUNT_LINE'
+filepath = '$COMPOSE_FILE'
+
+with open(filepath) as f:
+    lines = f.readlines()
+
+# 先找 services: 的缩进级别
+svc_block_indent = None
+for line in lines:
+    s = line.lstrip()
+    if s.rstrip() == 'services:':
+        svc_block_indent = len(line) - len(s)
+        break
+
+if svc_block_indent is None:
+    print('❌ 未找到 services: 块')
+    sys.exit(1)
+
+# 自动检测 services 下第一个服务的实际缩进（不假设是 +2）
+service_indent = None
+for line in lines:
+    s = line.lstrip()
+    ind = len(line) - len(s)
+    if ind > svc_block_indent and s and not s.startswith('#'):
+        service_indent = ind
+        break
+
+if service_indent is None:
+    print('❌ 未找到 services 下的服务定义')
+    sys.exit(1)
+
+in_svc = False
+for i, line in enumerate(lines):
+    s = line.lstrip()
+    ind = len(line) - len(s)
+    if s.startswith(svc + ':') and ind == service_indent:
+        in_svc = True
+        continue
+    if in_svc and s.startswith('volumes:'):
+        mount_indent = ind + 4  # 挂载行比 volumes: 多缩进 4 格
+        lines.insert(i + 1, ' ' * mount_indent + mount + '\n')
+        with open(filepath, 'w') as f:
+            f.writelines(lines)
+        print('✅ 挂载已注入')
+        sys.exit(0)
+    # 离开服务块：遇到同缩进或更少的非注释行
+    if in_svc and s and ind <= service_indent and not s.startswith('#'):
+        in_svc = False
+
+print('❌ 未找到该服务的 volumes: 段，注入失败')
+sys.exit(1)
+"
 fi
 
 if [ "$DRY_RUN" = true ]; then
