@@ -152,49 +152,45 @@ else
 fi
 
 # ============================================================
-# 4. 注入 compose 文件（直接编辑 docker-compose.yml 加挂载行）
+# 4. 停容器 → 注入 compose → 启动
 # ============================================================
 MOUNT_LINE="      - $PATCH_FILE:/opt/hermes/gateway/platforms/qqbot/adapter.py"
 
 # 检查是否已注入
 if grep -qF "$PATCH_FILE" "$COMPOSE_FILE" 2>/dev/null; then
-    echo "   ℹ️  挂载已存在，跳过注入"
+    echo "   ℹ️  挂载已存在"
 else
-    # 备份原始 compose 文件
+    # 备份
     cp "$COMPOSE_FILE" "$COMPOSE_FILE.bak.$(date +%Y%m%d_%H%M%S)"
     echo "   ✅ 已备份: $COMPOSE_FILE.bak.$(date +%Y%m%d_%H%M%S)"
 
-    # 往 $SERVICE 的 volumes 块末尾插入挂载行
-    # 匹配模式：在 services → $SERVICE → volumes: 之后，下一个同层 key 之前插入
+    # 注入挂载行
     sed -i "/^  $SERVICE:/,/^  [a-z]/{
       /^    volumes:/a\\
 $MOUNT_LINE
     }" "$COMPOSE_FILE"
-    echo "   ✅ 挂载已注入: $SERVICE → $MOUNT_LINE"
+    echo "   ✅ 挂载已注入"
 fi
 
 if [ "$DRY_RUN" = true ]; then
     echo ""
-    echo "🏁 --dry-run 模式，未做任何修改"
-    echo "   将要执行："
-    echo "   1. 备份 $COMPOSE_FILE"
-    echo "   2. 注入挂载: $MOUNT_LINE"
-    echo "   3. docker compose up -d --force-recreate"
+    echo "🏁 --dry-run 模式，未做修改"
     exit 0
 fi
 
-echo ""
-
 # ============================================================
-# 5. 重启
+# 5. 停容器 → 启动
 # ============================================================
-echo "🔄 重启容器..."
+echo "🛑 停止容器..."
 cd "$COMPOSE_DIR"
-docker compose up -d --force-recreate
+docker compose down
+echo ""
+echo "🚀 启动容器..."
+docker compose up -d
 echo ""
 echo "✅ 修复完成！验证方法："
 echo "   1. docker compose logs --tail=20 $SERVICE | grep -i qq"
 echo "   2. 确认 QQ 能收发消息"
 echo ""
 echo "📌 回滚方法：用备份文件恢复"
-echo "   cp $COMPOSE_FILE.bak.$(date +%Y%m%d)* $COMPOSE_FILE"
+echo "   cp $COMPOSE_FILE.bak.* $COMPOSE_FILE && docker compose up -d"
