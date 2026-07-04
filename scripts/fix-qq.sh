@@ -164,7 +164,7 @@ echo "🛑 停止容器（解锁 compose 文件）..."
 cd "$COMPOSE_DIR"
 docker compose down
 
-MOUNT_LINE="      - $PATCH_FILE:/opt/hermes/gateway/platforms/qqbot/adapter.py"
+MOUNT_BARE="- $PATCH_FILE:/opt/hermes/gateway/platforms/qqbot/adapter.py"
 
 # 检查是否已注入
 if grep -qF "$PATCH_FILE" "$COMPOSE_FILE" 2>/dev/null; then
@@ -179,7 +179,7 @@ else
     python3 -c "
 import sys
 svc = '$SERVICE'
-mount = '$MOUNT_LINE'
+mount_bare = '$MOUNT_BARE'
 filepath = '$COMPOSE_FILE'
 
 with open(filepath) as f:
@@ -197,7 +197,7 @@ if svc_block_indent is None:
     print('❌ 未找到 services: 块')
     sys.exit(1)
 
-# 自动检测 services 下第一个服务的实际缩进（不假设是 +2）
+# 自动检测 services 下第一个服务的实际缩进
 service_indent = None
 for line in lines:
     s = line.lstrip()
@@ -211,7 +211,6 @@ if service_indent is None:
     sys.exit(1)
 
 in_svc = False
-volumes_found = False
 for i, line in enumerate(lines):
     s = line.lstrip()
     ind = len(line) - len(s)
@@ -219,14 +218,26 @@ for i, line in enumerate(lines):
         in_svc = True
         continue
     if in_svc and s.startswith('volumes:'):
-        volumes_found = True
-        mount_indent = ind + 4  # 挂载行比 volumes: 多缩进 4 格
-        lines.insert(i + 1, ' ' * mount_indent + mount + '\n')
+        # 看已有 volume 条目用什么缩进，保持一致
+        item_indent = None
+        for j in range(i + 1, len(lines)):
+            ns = lines[j].lstrip()
+            nind = len(lines[j]) - len(ns)
+            if ns.startswith('- ') and nind > ind:
+                item_indent = nind
+                break
+            # 遇到同缩进或更少的行的就不继续了
+            if ns and nind <= ind and not ns.startswith('#'):
+                break
+        if item_indent is None:
+            # volumes: 是空的，用标准 +2
+            item_indent = ind + 2
+        lines.insert(i + 1, ' ' * item_indent + mount_bare + '\n')
         with open(filepath, 'w') as f:
             f.writelines(lines)
         print('✅ 挂载已注入')
         sys.exit(0)
-    # 离开服务块：遇到同缩进或更少的非注释行
+    # 离开服务块
     if in_svc and s and ind <= service_indent and not s.startswith('#'):
         in_svc = False
 
