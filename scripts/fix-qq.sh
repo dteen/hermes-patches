@@ -152,41 +152,38 @@ else
 fi
 
 # ============================================================
-# 4. 写 override 文件
+# 4. 注入 compose 文件（直接编辑 docker-compose.yml 加挂载行）
 # ============================================================
-if [ -f "$COMPOSE_DIR/docker-compose.override.yml" ]; then
-    echo "⚠️  发现已有 docker-compose.override.yml"
-    echo "   将被覆盖，原文件备份为: docker-compose.override.yml.bak.$(date +%Y%m%d_%H%M%S)"
-    if [ "$DRY_RUN" = false ]; then
-        cp "$COMPOSE_DIR/docker-compose.override.yml" \
-           "$COMPOSE_DIR/docker-compose.override.yml.bak.$(date +%Y%m%d_%H%M%S)"
-    fi
+MOUNT_LINE="      - $PATCH_FILE:/opt/hermes/gateway/platforms/qqbot/adapter.py"
+
+# 检查是否已注入
+if grep -qF "$PATCH_FILE" "$COMPOSE_FILE" 2>/dev/null; then
+    echo "   ℹ️  挂载已存在，跳过注入"
+else
+    # 备份原始 compose 文件
+    cp "$COMPOSE_FILE" "$COMPOSE_FILE.bak.$(date +%Y%m%d_%H%M%S)"
+    echo "   ✅ 已备份: $COMPOSE_FILE.bak.$(date +%Y%m%d_%H%M%S)"
+
+    # 往 $SERVICE 的 volumes 块末尾插入挂载行
+    # 匹配模式：在 services → $SERVICE → volumes: 之后，下一个同层 key 之前插入
+    sed -i "/^  $SERVICE:/,/^  [a-z]/{
+      /^    volumes:/a\\
+$MOUNT_LINE
+    }" "$COMPOSE_FILE"
+    echo "   ✅ 挂载已注入: $SERVICE → $MOUNT_LINE"
 fi
 
-OVERLAY_FILE="$COMPOSE_DIR/docker-compose.override.yml"
 if [ "$DRY_RUN" = true ]; then
-    echo "   [--dry-run] 不写入"
-    echo "   将要写入 $OVERLAY_FILE:"
-    echo "---"
-    cat << EOF
-services:
-  $SERVICE:
-    volumes:
-      - $PATCH_FILE:/opt/hermes/gateway/platforms/qqbot/adapter.py
-EOF
-    echo "---"
     echo ""
     echo "🏁 --dry-run 模式，未做任何修改"
+    echo "   将要执行："
+    echo "   1. 备份 $COMPOSE_FILE"
+    echo "   2. 注入挂载: $MOUNT_LINE"
+    echo "   3. docker compose up -d --force-recreate"
     exit 0
 fi
 
-cat > "$OVERLAY_FILE" << EOF
-services:
-  $SERVICE:
-    volumes:
-      - $PATCH_FILE:/opt/hermes/gateway/platforms/qqbot/adapter.py
-EOF
-echo "   ✅ override 已写入: $OVERLAY_FILE"
+echo ""
 
 # ============================================================
 # 5. 重启
@@ -199,4 +196,5 @@ echo "✅ 修复完成！验证方法："
 echo "   1. docker compose logs --tail=20 $SERVICE | grep -i qq"
 echo "   2. 确认 QQ 能收发消息"
 echo ""
-echo "📌 回滚方法：删除 $OVERLAY_FILE 然后重启"
+echo "📌 回滚方法：用备份文件恢复"
+echo "   cp $COMPOSE_FILE.bak.$(date +%Y%m%d)* $COMPOSE_FILE"
