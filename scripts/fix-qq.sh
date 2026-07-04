@@ -102,11 +102,23 @@ fi
 COMPOSE_DIR=$(dirname "$COMPOSE_FILE")
 echo "📁 Compose 目录: $COMPOSE_DIR"
 
-# 提取 service 名
+# 提取 service 名——优先从 compose 文件读，Docker label 做备选
+SERVICE=""
+# 方法1：Docker label
 SERVICE=$(docker inspect "$CONTAINER" \
     --format '{{index .Config.Labels "com.docker.compose.project.service"}}' 2>/dev/null)
 if [ -z "$SERVICE" ] || [ "$SERVICE" = "<no value>" ]; then
-    SERVICE="gateway"
+    SERVICE=""
+fi
+# 方法2：从 compose 文件直接解析
+if [ -z "$SERVICE" ] && [ -f "$COMPOSE_FILE" ]; then
+    SERVICE=$(cd "$COMPOSE_DIR" && docker compose config --services 2>/dev/null | head -1)
+fi
+# 方法3：还能找不到？报错退出
+if [ -z "$SERVICE" ]; then
+    echo "❌ 无法确定服务名"
+    echo "   请手动指定：SERVICE=xxx bash fix-qq.sh"
+    exit 1
 fi
 echo "🔧 服务名: $SERVICE"
 
