@@ -177,7 +177,7 @@ echo "   ✅ override 已写入: $OVERLAY_FILE"
 # ============================================================
 echo "🔄 重启容器..."
 cd "$COMPOSE_DIR"
-docker compose up -d
+docker compose up -d --force-recreate
 echo ""
 echo "✅ 修复完成！验证方法："
 echo "   1. docker compose logs --tail=20 $SERVICE | grep -i qq"
