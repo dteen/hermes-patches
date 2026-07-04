@@ -152,8 +152,18 @@ else
 fi
 
 # ============================================================
-# 4. 停容器 → 注入 compose → 启动
+# 4. 先停容器（解锁文件），再注入，再启动
 # ============================================================
+if [ "$DRY_RUN" = true ]; then
+    echo ""
+    echo "🏁 --dry-run 模式，未做修改"
+    exit 0
+fi
+
+echo "🛑 停止容器（解锁 compose 文件）..."
+cd "$COMPOSE_DIR"
+docker compose down
+
 MOUNT_LINE="      - $PATCH_FILE:/opt/hermes/gateway/platforms/qqbot/adapter.py"
 
 # 检查是否已注入
@@ -161,10 +171,11 @@ if grep -qF "$PATCH_FILE" "$COMPOSE_FILE" 2>/dev/null; then
     echo "   ℹ️  挂载已存在"
 else
     # 备份
-    cp "$COMPOSE_FILE" "$COMPOSE_FILE.bak.$(date +%Y%m%d_%H%M%S)"
-    echo "   ✅ 已备份: $COMPOSE_FILE.bak.$(date +%Y%m%d_%H%M%S)"
+    BAK_FILE="$COMPOSE_FILE.bak.$(date +%Y%m%d_%H%M%S)"
+    cp "$COMPOSE_FILE" "$BAK_FILE"
+    echo "   ✅ 已备份: $BAK_FILE"
 
-    # 注入挂载行（用 Python 逐行解析，自适应任意缩进）
+    # 注入挂载行（容器已停，文件不会被锁定）
     python3 -c "
 import sys
 svc = '$SERVICE'
@@ -200,6 +211,7 @@ if service_indent is None:
     sys.exit(1)
 
 in_svc = False
+volumes_found = False
 for i, line in enumerate(lines):
     s = line.lstrip()
     ind = len(line) - len(s)
@@ -207,6 +219,7 @@ for i, line in enumerate(lines):
         in_svc = True
         continue
     if in_svc and s.startswith('volumes:'):
+        volumes_found = True
         mount_indent = ind + 4  # 挂载行比 volumes: 多缩进 4 格
         lines.insert(i + 1, ' ' * mount_indent + mount + '\n')
         with open(filepath, 'w') as f:
@@ -222,18 +235,6 @@ sys.exit(1)
 "
 fi
 
-if [ "$DRY_RUN" = true ]; then
-    echo ""
-    echo "🏁 --dry-run 模式，未做修改"
-    exit 0
-fi
-
-# ============================================================
-# 5. 停容器 → 启动
-# ============================================================
-echo "🛑 停止容器..."
-cd "$COMPOSE_DIR"
-docker compose down
 echo ""
 echo "🚀 启动容器..."
 docker compose up -d
