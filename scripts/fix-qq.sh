@@ -6,8 +6,9 @@
 #   1. 自动定位 Hermes 容器
 #   2. 找到 docker-compose.yml 位置
 #   3. 从 GitHub 下载补丁文件
-#   4. 写入 docker-compose.override.yml（不碰原始文件）
-#   5. 重启容器生效
+#   4. 停容器 → 读原文件 → Python 生成新文件（带挂载行）
+#   5. docker compose config 校验 YAML 格式
+#   6. 校验通过才替换原文件 → 启动容器
 
 set -euo pipefail
 
@@ -57,10 +58,10 @@ trap cleanup INT TERM
 # ============================================================
 find_container() {
     local c
-    c=$(docker ps --format '{{.Names}}' | grep -iE 'hermes|hermes-agent' | head -1)
+    c=$(docker ps -a --format '{{.Names}}' | grep -iE 'hermes|hermes-agent' | head -1)
     if [ -z "$c" ]; then
-        echo "❌ 未找到运行中的 Hermes 容器"
-        echo "   请确认容器已启动：docker ps | grep hermes"
+        echo "❌ 未找到 Hermes 容器"
+        echo "   请确认容器已创建：docker ps -a | grep hermes"
         exit 1
     fi
     echo "$c"
@@ -102,7 +103,9 @@ fi
 COMPOSE_DIR=$(dirname "$COMPOSE_FILE")
 echo "📁 Compose 目录: $COMPOSE_DIR"
 
-# 提取 service 名——优先从 compose 文件读，Docker label 做备选
+# ============================================================
+# 提取服务名
+# ============================================================
 SERVICE=""
 # 方法1：Docker label
 SERVICE=$(docker inspect "$CONTAINER" \
@@ -114,7 +117,6 @@ fi
 if [ -z "$SERVICE" ] && [ -f "$COMPOSE_FILE" ]; then
     SERVICE=$(cd "$COMPOSE_DIR" && docker compose config --services 2>/dev/null | head -1)
 fi
-# 方法3：还能找不到？报错退出
 if [ -z "$SERVICE" ]; then
     echo "❌ 无法确定服务名"
     echo "   请手动指定：SERVICE=xxx bash fix-qq.sh"
@@ -127,7 +129,6 @@ echo "🔧 服务名: $SERVICE"
 # ============================================================
 echo "🌐 检测 GitHub 连通性..."
 
-# 如果设了 https_proxy 就直接用，否则测直连——不内置代理 IP，因为那是本地环境专用的
 if curl -sI --connect-timeout 5 https://github.com &>/dev/null || \
    [ -n "${https_proxy:-}" ] || [ -n "${HTTPS_PROXY:-}" ]; then
     echo "   ✅ 可访问"
@@ -152,7 +153,7 @@ else
 fi
 
 # ============================================================
-# 4. 先停容器（解锁文件），再注入，再启动
+# 4. 停容器 → Python 生成新文件 → 校验 → 替换
 # ============================================================
 if [ "$DRY_RUN" = true ]; then
     echo ""
@@ -160,32 +161,29 @@ if [ "$DRY_RUN" = true ]; then
     exit 0
 fi
 
-echo "🛑 停止容器（解锁 compose 文件）..."
+echo "🛑 停止容器..."
 cd "$COMPOSE_DIR"
 docker compose down
 
-MOUNT_BARE="- $PATCH_FILE:/opt/hermes/gateway/platforms/qqbot/adapter.py"
-
-# 检查是否已注入
+# 检查补丁是否已注入
 if grep -qF "$PATCH_FILE" "$COMPOSE_FILE" 2>/dev/null; then
-    echo "   ℹ️  挂载已存在"
+    echo "   ℹ️  挂载已存在，直接启动"
 else
-    # 备份
-    BAK_FILE="$COMPOSE_FILE.bak.$(date +%Y%m%d_%H%M%S)"
-    cp "$COMPOSE_FILE" "$BAK_FILE"
-    echo "   ✅ 已备份: $BAK_FILE"
+    NEW_FILE="${COMPOSE_FILE}.new"
+    MOUNT_BARE="- $PATCH_FILE:/opt/hermes/gateway/platforms/qqbot/adapter.py"
 
-    # 注入挂载行（容器已停，文件不会被锁定）
+    # Python 读原文件 → 加挂载行 → 写出新文件
     python3 -c "
 import sys
 svc = '$SERVICE'
 mount_bare = '$MOUNT_BARE'
-filepath = '$COMPOSE_FILE'
+inpath = '$COMPOSE_FILE'
+outpath = '$NEW_FILE'
 
-with open(filepath) as f:
+with open(inpath) as f:
     lines = f.readlines()
 
-# 先找 services: 的缩进级别
+# 找 services: 缩进
 svc_block_indent = None
 for line in lines:
     s = line.lstrip()
@@ -197,7 +195,7 @@ if svc_block_indent is None:
     print('❌ 未找到 services: 块')
     sys.exit(1)
 
-# 自动检测 services 下第一个服务的实际缩进
+# 检测第一个服务的缩进
 service_indent = None
 for line in lines:
     s = line.lstrip()
@@ -211,6 +209,7 @@ if service_indent is None:
     sys.exit(1)
 
 in_svc = False
+injected = False
 for i, line in enumerate(lines):
     s = line.lstrip()
     ind = len(line) - len(s)
@@ -218,7 +217,7 @@ for i, line in enumerate(lines):
         in_svc = True
         continue
     if in_svc and s.startswith('volumes:'):
-        # 看已有 volume 条目用什么缩进，保持一致
+        # 看已有 volume 条目用什么缩进
         item_indent = None
         for j in range(i + 1, len(lines)):
             ns = lines[j].lstrip()
@@ -226,24 +225,50 @@ for i, line in enumerate(lines):
             if ns.startswith('- ') and nind > ind:
                 item_indent = nind
                 break
-            # 遇到同缩进或更少的行的就不继续了
             if ns and nind <= ind and not ns.startswith('#'):
                 break
         if item_indent is None:
-            # volumes: 是空的，用标准 +2
             item_indent = ind + 2
+        # 插入 mount 行
         lines.insert(i + 1, ' ' * item_indent + mount_bare + '\n')
-        with open(filepath, 'w') as f:
-            f.writelines(lines)
-        print('✅ 挂载已注入')
-        sys.exit(0)
-    # 离开服务块
+        injected = True
+        break
     if in_svc and s and ind <= service_indent and not s.startswith('#'):
         in_svc = False
 
-print('❌ 未找到该服务的 volumes: 段，注入失败')
-sys.exit(1)
-"
+if not injected:
+    print('❌ 未找到该服务的 volumes: 段，注入失败')
+    sys.exit(1)
+
+with open(outpath, 'w') as f:
+    f.writelines(lines)
+print('✅ 新文件已写出: $NEW_FILE')
+" || {
+    echo ""
+    echo "❌ 生成新文件失败，原文件未改动"
+    exit 1
+}
+
+    # 用 docker compose 校验 YAML
+    echo "🔍 校验 YAML 格式..."
+    if docker compose -f "$NEW_FILE" config > /dev/null 2>&1; then
+        echo "   ✅ YAML 格式正确"
+    else
+        echo "   ❌ YAML 格式错误！"
+        docker compose -f "$NEW_FILE" config 2>&1 || true
+        echo ""
+        echo "新文件保留在: $NEW_FILE（供检查）"
+        echo "原文件未改动"
+        exit 1
+    fi
+
+    # 备份原文件 + 替换
+    BAK_FILE="$COMPOSE_FILE.bak.$(date +%Y%m%d_%H%M%S)"
+    cp "$COMPOSE_FILE" "$BAK_FILE"
+    echo "   ✅ 原文件已备份: $BAK_FILE"
+
+    mv "$NEW_FILE" "$COMPOSE_FILE"
+    echo "   ✅ 新文件已替换原文件"
 fi
 
 echo ""
