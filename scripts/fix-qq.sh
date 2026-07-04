@@ -17,6 +17,9 @@ DRY_RUN="${DRY_RUN:-false}"
 GITHUB_RAW="https://raw.githubusercontent.com/dteen/hermes-patches/main"
 PATCH_URL="$GITHUB_RAW/qq-adapter.py"
 
+PATCH_DIR="${HOME}/.hermes-patches"
+PATCH_FILE="$PATCH_DIR/qq-adapter.py"
+
 # ============================================================
 # 前提检查
 # ============================================================
@@ -126,13 +129,14 @@ else
 fi
 
 echo "📥 下载补丁..."
+mkdir -p "$PATCH_DIR"
 if [ "$DRY_RUN" = true ]; then
     echo "   [--dry-run] 跳过下载"
     echo "   源: $PATCH_URL"
-    echo "   目标: $COMPOSE_DIR/qq-adapter.py"
+    echo "   目标: $PATCH_FILE"
 else
-    curl -sL -o "$COMPOSE_DIR/qq-adapter.py" "$PATCH_URL"
-    echo "   ✅ 已下载: $COMPOSE_DIR/qq-adapter.py ($(wc -c < "$COMPOSE_DIR/qq-adapter.py") bytes)"
+    curl -sL -o "$PATCH_FILE" "$PATCH_URL"
+    echo "   ✅ 已下载: $PATCH_FILE ($(wc -c < "$PATCH_FILE") bytes)"
 fi
 
 # ============================================================
@@ -156,7 +160,7 @@ if [ "$DRY_RUN" = true ]; then
 services:
   $SERVICE:
     volumes:
-      - $COMPOSE_DIR/qq-adapter.py:/opt/hermes/gateway/platforms/qqbot/adapter.py
+      - $PATCH_FILE:/opt/hermes/gateway/platforms/qqbot/adapter.py
 EOF
     echo "---"
     echo ""
@@ -168,7 +172,7 @@ cat > "$OVERLAY_FILE" << EOF
 services:
   $SERVICE:
     volumes:
-      - $COMPOSE_DIR/qq-adapter.py:/opt/hermes/gateway/platforms/qqbot/adapter.py
+      - $PATCH_FILE:/opt/hermes/gateway/platforms/qqbot/adapter.py
 EOF
 echo "   ✅ override 已写入: $OVERLAY_FILE"
 
