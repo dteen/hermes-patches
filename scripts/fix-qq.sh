@@ -181,7 +181,10 @@ inpath = '$COMPOSE_FILE'
 outpath = '$NEW_FILE'
 
 with open(inpath) as f:
-    lines = f.readlines()
+    old_lines = f.readlines()
+
+# 逐行复制 old → new，同时记录插入位置
+lines = list(old_lines)
 
 # 找 services: 缩进
 svc_block_indent = None
@@ -209,7 +212,7 @@ if service_indent is None:
     sys.exit(1)
 
 in_svc = False
-injected = False
+insert_pos = -1
 for i, line in enumerate(lines):
     s = line.lstrip()
     ind = len(line) - len(s)
@@ -229,20 +232,49 @@ for i, line in enumerate(lines):
                 break
         if item_indent is None:
             item_indent = ind + 2
-        # 插入 mount 行
-        lines.insert(i + 1, ' ' * item_indent + mount_bare + '\n')
-        injected = True
+        insert_pos = i + 1
+        mount_line = ' ' * item_indent + mount_bare + '\n'
+        lines.insert(insert_pos, mount_line)
         break
     if in_svc and s and ind <= service_indent and not s.startswith('#'):
         in_svc = False
 
-if not injected:
+if insert_pos < 0:
     print('❌ 未找到该服务的 volumes: 段，注入失败')
     sys.exit(1)
 
+# === 逐行比对：除了插入行，其他行必须一字不差 ===
+errors = []
+for idx, line in enumerate(lines):
+    # 算出对应的原始行索引
+    if idx < insert_pos:
+        old_idx = idx
+    elif idx == insert_pos:
+        # 这就是我们插入的行，跳过比对
+        continue
+    else:
+        old_idx = idx - 1  # 插入后，后续行往后移了1位
+
+    if old_idx >= len(old_lines):
+        errors.append(f'第{idx+1}行: 新文件多出多余行 → {repr(line)}')
+        continue
+
+    if line != old_lines[old_idx]:
+        errors.append(f'第{idx+1}行不匹配原文件第{old_idx+1}行')
+        errors.append(f'  原: {repr(old_lines[old_idx])}')
+        errors.append(f'  新: {repr(line)}')
+
+if errors:
+    print('❌ 文件校验失败！除了挂载行之外还有其他改动:')
+    for e in errors:
+        print(f'  {e}')
+    sys.exit(1)
+
+print(f'✅ 逐行校验通过 —— 仅新增了 1 行挂载，其余 {len(old_lines)} 行与原文完全一致')
+
 with open(outpath, 'w') as f:
     f.writelines(lines)
-print('✅ 新文件已写出: $NEW_FILE')
+print(f'✅ 新文件已写出: $NEW_FILE ({len(lines)} 行)')
 " || {
     echo ""
     echo "❌ 生成新文件失败，原文件未改动"
