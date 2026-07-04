@@ -156,7 +156,7 @@ if [ "$DRY_RUN" = true ]; then
 services:
   $SERVICE:
     volumes:
-      - ./qq-adapter.py:/opt/hermes/gateway/platforms/qqbot/adapter.py
+      - $COMPOSE_DIR/qq-adapter.py:/opt/hermes/gateway/platforms/qqbot/adapter.py
 EOF
     echo "---"
     echo ""
@@ -168,7 +168,7 @@ cat > "$OVERLAY_FILE" << EOF
 services:
   $SERVICE:
     volumes:
-      - ./qq-adapter.py:/opt/hermes/gateway/platforms/qqbot/adapter.py
+      - $COMPOSE_DIR/qq-adapter.py:/opt/hermes/gateway/platforms/qqbot/adapter.py
 EOF
 echo "   ✅ override 已写入: $OVERLAY_FILE"
 
